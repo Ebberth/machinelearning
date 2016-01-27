@@ -1,0 +1,167 @@
+---
+title: "Final Project Report - Practical Machine Learning Course"
+output: html_document
+---
+## Introduction
+This document describes my apporoach to building a predictive model for the Weight Lifting Exercises Dataset, which can be found [here][1]. 
+
+## Goal
+The goal is to fit a predictive model to the provided data in order to predict the kind of weightlifting that was performed. It turns out that we can fit a tree and bagging which predicts very well on out of sample data.
+
+## Background
+
+Using devices such as JawboneUp, NikeFuelBand, and Fitbitit is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways:
+
+Class A: exactly according to the specification
+Class B: throwing the elbows to the front
+Class C: lifting the dumbbell only halfway
+Class D: lowering the dumbbell only halfway
+Class E: throwing the hips to the front
+
+## Report
+
+This report intends to:   
+* describing how the model was built;  
+* show how cross validation was used;  
+* describe what the expected out of sample error is;  
+* justify the choices that ware made.   
+
+### Load packages
+```{r}
+
+
+library(caret)
+library(ggplot2)
+library(Hmisc)
+
+
+```
+
+
+### Data retrieval
+
+The data which is used for prediction is quite large. It consists 19,622 observations in 160 variables. The first variables contain general data about the measurement (time, user, etc.), the last one is the classe variable ("A" if the exercise was performed correctly), and the remaining ones are various measurements from the sensors. 
+```{r, cache=TRUE}
+set.seed(12345)
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+raw_training_data <- read.csv(url(trainUrl), na.strings=c("NA","#DIV/0!",""))
+raw_validation_data  <- read.csv(url(testUrl), na.strings=c('NA',"#DIV/0!","")) 
+
+# summary(raw_training_data)
+```
+
+
+### Adjusting classes in validation base
+```{r}
+classes <- data.frame(train = sapply(raw_training_data, class),
+                      val = sapply(raw_validation_data, class), 
+                      sapply(raw_training_data, class)==sapply(raw_validation_data, class) )
+# sum(!classes$sapply.raw_training_data..class.....sapply.raw_validation_data..)
+
+for(i in 1:dim(raw_training_data)[2]) {
+  if(class(raw_training_data[,i]) != class(raw_validation_data[,i])) {
+    raw_validation_data[,i] <- as(raw_validation_data[,i],class(raw_training_data[,i]))
+    if(class(raw_training_data[,i]) != class(raw_validation_data[,i])) {
+      raw_validation_data[,i] <- as.numeric(raw_validation_data[,i])}
+    #cat(i, class(raw_training_data[,i]),class(raw_validation_data[,i]),"\n")
+    }
+}
+```
+
+
+### Partioning Training data set into two data sets:
+I split the data into two parts: 60% of the observations will be used to train the models and the remaining 40% will serve as validation data. The final precision of the model is tested on the provided test set.
+```{r}
+set.seed(12312)
+inTrain <- createDataPartition(y=raw_training_data$classe, p=0.6, list=FALSE)
+myTraining <- raw_training_data[inTrain, ] 
+myTesting <- raw_training_data[-inTrain, ]
+```
+
+
+### Cleansing
+
+#### The following transformations were used to clean the data:  
+
+##### **Cleaning NearZeroVariance Variables**  
+Run this code to view possible NZV Variables, I inspected the list manually and determined that all variables were worth eliminating from the dataset for building the training model.
+
+##### **Filter variables related to time**  
+
+Filter variables related to time. We are not looking at time windows since we want to predict classe using the sensor readings, which have nothing to do with time.
+
+##### **Filter variables that are mostly NA**  
+
+Filter variables that are mostly NA, which were covariates produced by the research team. These are not relevant to our investigation since we are looking into predicting the classe given by an instantaenous movement.
+
+##### **Finding correlated variables**  
+
+Finding correlated variables so that we may exclude one of the highly correlated pairs
+
+```{r, cache=T,out.width=180}
+myDataNZV <- nearZeroVar(myTraining, saveMetrics=T) # for inspection 
+myDataNZV
+```
+
+```{r, cache=T}
+# Cleaning NearZeroVariance Variables Run this code to view possible NZV Variables, I inspected the list manually and determined that all variables were worth eliminating from the dataset for building the training model.
+
+nsv_positions <- nearZeroVar(myTraining,saveMetrics=F)
+filtered_training <- myTraining[-c(nsv_positions)] # Using the position, we filter out the variables that were near-zero-value.
+
+# Filter variables related to time. We are not looking at time windows since we want to predict classe using the sensor readings, which have nothing to do with time.
+excluding_vars <- names(filtered_training) %in% c("X","user_name","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp","new_window","num_window")
+filtered_training  <- filtered_training[!excluding_vars]
+
+# Filter variables that are mostly NA, which were covariates produced by the research team. These are not relevant to our investigation since we are looking 
+# into predicting the classe given by an instantaenous movement.
+exclude_cols <- grep("^var|^avg|^max|^min|^std|^amplitude",names(filtered_training))
+filtered_training <- filtered_training[-c(exclude_cols)]
+
+# Finding correlated variables so that we may exclude one of the highly correlated pairs
+correlated_cols_to_exclude <- caret::findCorrelation(cor(filtered_training[-71], use="pairwise.complete.obs"), cutoff=0.8)
+filtered_training <- filtered_training[-c(correlated_cols_to_exclude)]
+```
+
+
+### Training the model: Tree and Bagging
+
+This model uses a classification tree with bagging that has an accuracy of about 98% 
+
+```{r, cache = T}
+predictors = data.frame(filtered_training[-59])
+classe = filtered_training$classe
+treebag <- bag(predictors, classe, B = 10,
+                bagControl = bagControl(fit = ctreeBag$fit,
+                                        predict = ctreeBag$pred,
+                                        aggregate = ctreeBag$aggregate))
+confusionMatrix(predict(treebag,predictors),classe)
+```
+
+
+### Verify the model: Estimating Out of Sample Error
+Out of Sample Error was tested using the myTestint data frame. Now, we can compare the actual classe values of the predictors_train set to those that we predicted. As seen below the model is very effective with an accuracy of 95% and a Kappa of 0.94.
+
+```{r, cache=T}
+predictors_train <- myTesting[names(myTesting) %in% names(predictors)]
+confusionMatrix(predict(treebag,predictors_train), myTesting$classe)
+```
+
+### Predicting "new" data
+```{r}
+predictors_val <- raw_validation_data[names(raw_validation_data) %in% names(predictors)]
+predict(treebag,predictors_val)
+```
+
+### Conclusion
+
+This simple exercise showed us that applying some machine learning techniques which are basic today and easy to implement in R could result in a highly precise predictive model. 
+
+
+[1]: http://groupware.les.inf.puc-rio.br/har "Title1"
